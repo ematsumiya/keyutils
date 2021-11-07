@@ -38,254 +38,26 @@
 #include "key.dns.h"
 
 /*
- *
- */
-static void afsdb_hosts_to_addrs(ns_msg handle, ns_sect section)
-{
-	char *vllist[MAX_VLS];	/* list of name servers	*/
-	int vlsnum = 0;		/* number of name servers in list */
-	int rrnum;
-	ns_rr rr;
-	int subtype, i, ret;
-	unsigned int ttl = UINT_MAX, rr_ttl;
-
-	debug("AFSDB RR count is %d", ns_msg_count(handle, section));
-
-	/* Look at all the resource records in this section. */
-	for (rrnum = 0; rrnum < ns_msg_count(handle, section); rrnum++) {
-		/* Expand the resource record number rrnum into rr. */
-		if (ns_parserr(&handle, section, rrnum, &rr)) {
-			_error("ns_parserr failed : %m");
-			continue;
-		}
-
-		/* We're only interested in AFSDB records */
-		if (ns_rr_type(rr) == ns_t_afsdb) {
-			vllist[vlsnum] = malloc(MAXDNAME);
-			if (!vllist[vlsnum])
-				error("Out of memory");
-
-			subtype = ns_get16(ns_rr_rdata(rr));
-
-			/* Expand the name server's domain name */
-			if (ns_name_uncompress(ns_msg_base(handle),
-					       ns_msg_end(handle),
-					       ns_rr_rdata(rr) + 2,
-					       vllist[vlsnum],
-					       MAXDNAME) < 0)
-				error("ns_name_uncompress failed");
-
-			rr_ttl = ns_rr_ttl(rr);
-			if (ttl > rr_ttl)
-				ttl = rr_ttl;
-
-			/* Check the domain name we've just unpacked and add it to
-			 * the list of VL servers if it is not a duplicate.
-			 * If it is a duplicate, just ignore it.
-			 */
-			for (i = 0; i < vlsnum; i++)
-				if (strcasecmp(vllist[i], vllist[vlsnum]) == 0)
-					goto next_one;
-
-			/* Turn the hostname into IP addresses */
-			ret = dns_resolver(vllist[vlsnum], NULL);
-			if (ret) {
-				debug("AFSDB RR can't resolve."
-				      "subtype:%d, server name:%s, netmask:%u",
-				      subtype, vllist[vlsnum], mask);
-				goto next_one;
-			}
-
-			info("AFSDB RR subtype:%d, server name:%s, ip:%*.*s, ttl:%u",
-			     subtype, vllist[vlsnum],
-			     (int)payload[payload_index - 1].iov_len,
-			     (int)payload[payload_index - 1].iov_len,
-			     (char *)payload[payload_index - 1].iov_base,
-			     ttl);
-
-			/* prepare for the next record */
-			vlsnum++;
-			continue;
-
-		next_one:
-			free(vllist[vlsnum]);
-		}
-	}
-
-	key_expiry = ttl;
-	info("ttl: %u", key_expiry);
-}
-
-/*
- *
- */
-static void srv_hosts_to_addrs(ns_msg handle, ns_sect section)
-{
-	char *vllist[MAX_VLS];	/* list of name servers	*/
-	int vlsnum = 0;		/* number of name servers in list */
-	int rrnum;
-	ns_rr rr;
-	int subtype, i, ret;
-	unsigned short pref, weight, port;
-	unsigned int ttl = UINT_MAX, rr_ttl;
-	char sport[8];
-
-	debug("SRV RR count is %d", ns_msg_count(handle, section));
-
-	/* Look at all the resource records in this section. */
-	for (rrnum = 0; rrnum < ns_msg_count(handle, section); rrnum++) {
-		/* Expand the resource record number rrnum into rr. */
-		if (ns_parserr(&handle, section, rrnum, &rr)) {
-			_error("ns_parserr failed : %m");
-			continue;
-		}
-
-		if (ns_rr_type(rr) == ns_t_srv) {
-			vllist[vlsnum] = malloc(MAXDNAME);
-			if (!vllist[vlsnum])
-				error("Out of memory");
-
-			subtype = ns_get16(ns_rr_rdata(rr));
-
-			/* Expand the name server's domain name */
-			if (ns_name_uncompress(ns_msg_base(handle),
-					       ns_msg_end(handle),
-					       ns_rr_rdata(rr) + 6,
-					       vllist[vlsnum],
-					       MAXDNAME) < 0) {
-				_error("ns_name_uncompress failed");
-				continue;
-			}
-
-			rr_ttl = ns_rr_ttl(rr);
-			if (ttl > rr_ttl)
-				ttl = rr_ttl;
-
-			pref   = ns_get16(ns_rr_rdata(rr));
-			weight = ns_get16(ns_rr_rdata(rr) + 2);
-			port   = ns_get16(ns_rr_rdata(rr) + 4);
-			info("rdata %u %u %u", pref, weight, port);
-
-			sprintf(sport, "+%hu", port);
-
-			/* Check the domain name we've just unpacked and add it to
-			 * the list of VL servers if it is not a duplicate.
-			 * If it is a duplicate, just ignore it.
-			 */
-			for (i = 0; i < vlsnum; i++)
-				if (strcasecmp(vllist[i], vllist[vlsnum]) == 0)
-					goto next_one;
-
-			/* Turn the hostname into IP addresses */
-			ret = dns_resolver(vllist[vlsnum], sport);
-			if (ret) {
-				debug("SRV RR can't resolve."
-				      "subtype:%d, server name:%s, netmask:%u",
-				      subtype, vllist[vlsnum], mask);
-				goto next_one;
-			}
-
-			info("SRV RR subtype:%d, server name:%s, ip:%*.*s, ttl:%u",
-			     subtype, vllist[vlsnum],
-			     (int)payload[payload_index - 1].iov_len,
-			     (int)payload[payload_index - 1].iov_len,
-			     (char *)payload[payload_index - 1].iov_base,
-			     ttl);
-
-			/* prepare for the next record */
-			vlsnum++;
-			continue;
-
-		next_one:
-			free(vllist[vlsnum]);
-		}
-	}
-
-	key_expiry = ttl;
-	info("ttl: %u", key_expiry);
-}
-
-/*
  * Look up an AFSDB record to get the VL server addresses.
  */
-static int dns_query_AFSDB(const char *cell)
+static int dns_query_AFSDB(struct host_info *hi, payload_t *payload)
 {
-	int	response_len;		/* buffer length */
-	ns_msg	handle;			/* handle for response message */
-	union {
-		HEADER hdr;
-		u_char buf[NS_PACKETSZ];
-	} response;		/* response buffers */
-
-	debug("Get AFSDB RR for cell name:'%s'", cell);
-
-	/* query the dns for an AFSDB resource record */
-	response_len = res_query(cell,
-				 ns_c_in,
-				 ns_t_afsdb,
-				 response.buf,
-				 sizeof(response));
-
-	if (response_len < 0) {
-		/* negative result */
-		_nsError(h_errno, cell);
-		return -1;
-	}
-
-	if (ns_initparse(response.buf, response_len, &handle) < 0)
-		error("ns_initparse: %m");
-
-	/* look up the hostnames we've obtained to get the actual addresses */
-	afsdb_hosts_to_addrs(handle, ns_s_an);
-
-	info("DNS query AFSDB RR results:%u ttl:%u", payload_index, key_expiry);
-	return 0;
+	return dns_resolver(hi, ns_t_afsdb, payload);
 }
 
 /*
  * Look up an SRV record to get the VL server addresses [RFC 5864].
  */
-static int dns_query_VL_SRV(const char *cell)
+static int dns_query_VL_SRV(struct host_info *hi, payload_t *payload)
 {
-	int	response_len;		/* buffer length */
-	ns_msg	handle;			/* handle for response message */
-	union {
-		HEADER hdr;
-		u_char buf[NS_PACKETSZ];
-	} response;
-	char name[1024];
-
-	snprintf(name, sizeof(name), "_afs3-vlserver._udp.%s", cell);
-
-	debug("Get VL SRV RR for name:'%s'", name);
-
-	response_len = res_query(name,
-				 ns_c_in,
-				 ns_t_srv,
-				 response.buf,
-				 sizeof(response));
-
-	if (response_len < 0) {
-		/* negative result */
-		_nsError(h_errno, cell);
-		return -1;
-	}
-
-	if (ns_initparse(response.buf, response_len, &handle) < 0)
-		error("ns_initparse: %m");
-
-	/* look up the hostnames we've obtained to get the actual addresses */
-	srv_hosts_to_addrs(handle, ns_s_an);
-
-	info("DNS query VL SRV RR results:%u ttl:%u", payload_index, key_expiry);
-	return 0;
+	return dns_resolver(hi, ns_t_srv, payload);
 }
 
 /*
  * Instantiate the key.
  */
 static __attribute__((noreturn))
-void afs_instantiate(const char *cell)
+void afs_instantiate(payload_t *payload)
 {
 	int ret;
 
@@ -296,18 +68,14 @@ void afs_instantiate(const char *cell)
 			error("%s: keyctl_set_timeout: %m", __func__);
 	}
 
-	/* handle a lack of results */
-	if (payload_index == 0)
-		nsError(NO_DATA, cell);
-
 	/* must include a NUL char at the end of the payload */
-	payload[payload_index].iov_base = "";
-	payload[payload_index++].iov_len = 1;
-	dump_payload();
+	payload->data[payload->index].iov_base = "";
+	payload->data[payload->index++].iov_len = 1;
+	dump_payload(payload);
 
 	/* load the key with data key */
 	if (!debug_mode) {
-		ret = keyctl_instantiate_iov(key, payload, payload_index, 0);
+		ret = keyctl_instantiate_iov(key, payload->data, payload->index, 0);
 		if (ret == -1)
 			error("%s: keyctl_instantiate: %m", __func__);
 	}
@@ -318,16 +86,25 @@ void afs_instantiate(const char *cell)
 /*
  * Look up VL servers for AFS.
  */
-void afs_look_up_VL_servers(const char *cell, char *options)
+void afs_look_up_VL_servers(char *cell, char *options, payload_t *payload)
 {
+	struct host_info hi;
+	memset(&hi, 0, sizeof(struct host_info));
+
+	hi.hostname = cell;
+
 	/* Is the IP address family limited? */
 	if (strcmp(options, "ipv4") == 0)
-		mask = INET_IP4_ONLY;
+		hi.mask |= AF_INET;
 	else if (strcmp(options, "ipv6") == 0)
-		mask = INET_IP6_ONLY;
+		hi.mask |= AF_INET6;
 
-	if (dns_query_VL_SRV(cell) != 0)
-		dns_query_AFSDB(cell);
+	if (dns_query_VL_SRV(&hi, payload) != 0)
+		dns_query_AFSDB(&hi, payload);
 
-	afs_instantiate(cell);
+	/* handle a lack of results */
+	if (payload->index == 0)
+		nsError(NO_DATA, cell);
+
+	afs_instantiate(payload);
 }

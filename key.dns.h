@@ -31,11 +31,7 @@
 #include <time.h>
 #include <ctype.h>
 
-#define	MAX_VLS			15	/* Max Volume Location Servers Per-Cell */
-#define	INET_IP4_ONLY		0x1
-#define	INET_IP6_ONLY		0x2
-#define	INET_ALL		0xFF
-#define ONE_ADDR_ONLY		0x100
+#include "dns_common.h"
 
 /*
  * key.dns_resolver.c
@@ -43,11 +39,6 @@
 extern key_serial_t key;
 extern int debug_mode;
 extern unsigned mask;
-extern unsigned int key_expiry;
-
-#define N_PAYLOAD 256
-extern struct iovec payload[N_PAYLOAD];
-extern int payload_index;
 
 extern __attribute__((format(printf, 1, 2), noreturn))
 void error(const char *fmt, ...);
@@ -63,12 +54,11 @@ extern void _nsError(int err, const char *domain);
 extern __attribute__((format(printf, 1, 2)))
 void debug(const char *fmt, ...);
 
-extern void append_address_to_payload(const char *addr);
-extern void dump_payload(void);
-extern int dns_resolver(const char *server_name, const char *port);
+extern void append_address_to_payload(char *addr, payload_t *payload);
+extern void dump_payload(payload_t *payload);
 
 /*
  * dns.afsdb.c
  */
 extern __attribute__((noreturn))
-void afs_look_up_VL_servers(const char *cell, char *options);
+void afs_look_up_VL_servers(char *cell, char *options, payload_t *payload);

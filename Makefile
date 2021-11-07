@@ -159,12 +159,14 @@ keyctl_watch.o: watch_queue.h
 request-key: request-key.o $(LIB_DEPENDENCY)
 	$(CC) -L. $(CFLAGS) $(LDFLAGS) $(RPATH) -o $@ $< -lkeyutils
 
-key.dns_resolver: key.dns_resolver.o dns.afsdb.o $(LIB_DEPENDENCY)
+key.dns_resolver: key.dns_resolver.o dns.afsdb.o dns_common.o $(LIB_DEPENDENCY)
 	$(CC) -L. $(CFLAGS) $(LDFLAGS) $(RPATH) -o $@ \
-		key.dns_resolver.o dns.afsdb.o -lkeyutils -lresolv
+		key.dns_resolver.o dns.afsdb.o dns_common.o \
+		-lkeyutils -lresolv
 
-key.dns_resolver.o: key.dns_resolver.c key.dns.h
-dns.afsdb.o: dns.afsdb.c key.dns.h
+key.dns_resolver.o: key.dns_resolver.c dns_common.o key.dns.h dns_common.h
+dns.afsdb.o: dns.afsdb.c dns_common.o key.dns.h dns_common.h
+dns_common.o: dns_common.c dns_common.h
 
 ###############################################################################
 #

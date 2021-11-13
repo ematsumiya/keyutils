@@ -54,9 +54,6 @@ extern void _nsError(int err, const char *domain);
 extern __attribute__((format(printf, 1, 2)))
 void debug(const char *fmt, ...);
 
-extern void append_address_to_payload(char *addr, payload_t *payload);
-extern void dump_payload(payload_t *payload);
-
 /*
  * dns.afsdb.c
  */

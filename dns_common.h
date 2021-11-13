@@ -25,6 +25,7 @@
 #include <arpa/inet.h>
 #include <resolv.h>
 #include <limits.h>
+#include <sys/param.h>
 #include <sys/uio.h> // struct iovec
 
 #define MAX_VLS		15	/* Max Volume Location Servers Per-Cell (AFSDB) */
@@ -32,8 +33,9 @@
 #define ONE_ADDR_ONLY	100	/* Mask to indicate that only the first address
 				   from the DNS record must be returned */
 
-#define HAS_INET(m) 	(((m) & AF_INET) == AF_INET)
-#define HAS_INET6(m) 	(((m) & AF_INET6) == AF_INET6)
+#define _NO_OAO(m)	((m) & ~ONE_ADDR_ONLY)
+#define HAS_INET(m) 	((_NO_OAO(m) & AF_INET) == AF_INET)
+#define HAS_INET6(m) 	((_NO_OAO(m) & AF_INET6) == AF_INET6)
 
 extern __attribute__((format(printf, 1, 2), noreturn))
 void error(const char *fmt, ...);
@@ -66,6 +68,7 @@ static inline const char *print_ns_type(int type)
 
 struct host_info {
 	char *hostname;
+	char *ip;
 	char port[8];
 	int mask;
 	unsigned int *ttl;
@@ -78,6 +81,7 @@ struct payload {
 
 typedef struct payload payload_t;
 
-int dns_resolver(struct host_info *hi, ns_type type, payload_t *payload);
+void dump_payload(payload_t *payload);
+int dns_resolver(struct host_info *host, ns_type type, payload_t *payload);
 
 #endif /* DNS_COMMON_H */

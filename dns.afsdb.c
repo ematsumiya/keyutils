@@ -40,17 +40,18 @@
 /*
  * Look up an AFSDB record to get the VL server addresses.
  */
-static int dns_query_AFSDB(struct host_info *hi, payload_t *payload)
+static int dns_query_AFSDB(struct host_info *host, payload_t *payload)
 {
-	return dns_resolver(hi, ns_t_afsdb, payload);
+	//return dns_resolver(host, ns_t_afsdb, payload);
+	return dns_resolver(host, ns_t_mx, payload);
 }
 
 /*
  * Look up an SRV record to get the VL server addresses [RFC 5864].
  */
-static int dns_query_VL_SRV(struct host_info *hi, payload_t *payload)
+static int dns_query_VL_SRV(struct host_info *host, payload_t *payload)
 {
-	return dns_resolver(hi, ns_t_srv, payload);
+	return dns_resolver(host, ns_t_srv, payload);
 }
 
 /*
@@ -88,19 +89,22 @@ void afs_instantiate(payload_t *payload)
  */
 void afs_look_up_VL_servers(char *cell, char *options, payload_t *payload)
 {
-	struct host_info hi;
-	memset(&hi, 0, sizeof(struct host_info));
+	struct host_info host = { 0 };
 
-	hi.hostname = cell;
+	host.hostname = cell;
 
-	/* Is the IP address family limited? */
+	/*
+	 * Is the IP address family limited?
+	 *
+	 * FIXME: shouldn't ONE_ADDR_ONLY be handled here?
+	 */
 	if (strcmp(options, "ipv4") == 0)
-		hi.mask |= AF_INET;
+		host.mask |= AF_INET;
 	else if (strcmp(options, "ipv6") == 0)
-		hi.mask |= AF_INET6;
+		host.mask |= AF_INET6;
 
-	if (dns_query_VL_SRV(&hi, payload) != 0)
-		dns_query_AFSDB(&hi, payload);
+	if (dns_query_VL_SRV(&host, payload) != 0)
+		dns_query_AFSDB(&host, payload);
 
 	/* handle a lack of results */
 	if (payload->index == 0)

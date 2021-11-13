@@ -153,7 +153,7 @@ static const int ns_errno_map[] = {
 void _nsError(int err, const char *domain)
 {
 	if (isatty(2))
-		fprintf(stderr, "NS:%s: %s.\n", domain, hstrerror(err));
+		fprintf(stderr, "NS: %s: %s.\n", domain, hstrerror(err));
 	else
 		syslog(LOG_INFO, "%s: %s", domain, hstrerror(err));
 
@@ -225,23 +225,21 @@ void debug(const char *fmt, ...)
 static __attribute__((noreturn))
 int dns_query_a_or_aaaa(char *hostname, char *options, payload_t *payload)
 {
-	struct host_info hi;
-	int ret, af_mask;
-
-	memset(&hi, 0, sizeof(struct host_info));
+	struct host_info host = { 0 };
+	int ret;
 
 	debug("Get A/AAAA RR for hostname:'%s', options:'%s'",
 	      hostname, options);
 
-	hi.hostname = hostname;
+	host.hostname = hostname;
 
 	if (!options[0]) {
 		/* legacy mode */
-		hi.mask = AF_INET | ONE_ADDR_ONLY;
+		host.mask = AF_INET | ONE_ADDR_ONLY;
 	} else {
 		char *k, *val;
 
-		hi.mask |= ONE_ADDR_ONLY;
+		host.mask |= ONE_ADDR_ONLY;
 
 		do {
 			k = options;
@@ -262,30 +260,28 @@ int dns_query_a_or_aaaa(char *hostname, char *options, payload_t *payload)
 			debug("Opt %s", k);
 
 			if (strcmp(k, "ipv4") == 0)
-				hi.mask |= AF_INET;
+				host.mask |= AF_INET;
 			else if (strcmp(k, "ipv6") == 0)
-				hi.mask |= AF_INET6;
+				host.mask |= AF_INET6;
 			else if (strcmp(k, "list") == 0)
-				hi.mask &= ~ONE_ADDR_ONLY;
+				host.mask &= ~ONE_ADDR_ONLY;
 			else if (strcmp(k, "ttl") == 0) {
-				hi.ttl = malloc(sizeof(unsigned int));
+				host.ttl = malloc(sizeof(unsigned int));
 			}
 		} while (*options);
 	}
 
-	if (!HAS_INET(hi.mask) && !HAS_INET6(hi.mask))
-		hi.mask |= AF_INET | AF_INET6;
-
-	af_mask = hi.mask & ~ONE_ADDR_ONLY;
+	if (!HAS_INET(host.mask) && !HAS_INET6(host.mask))
+		host.mask |= AF_INET | AF_INET6;
 
 	/* Turn the hostname into IP addresses */
-	if (HAS_INET(af_mask))
-		ret = dns_resolver(&hi, ns_t_a, payload);
+	if (HAS_INET(host.mask))
+		ret = dns_resolver(&host, ns_t_a, payload);
 	if (ret)
 		nsError(NO_DATA, hostname);
 
-	if (HAS_INET6(af_mask))
-		ret = dns_resolver(&hi, ns_t_aaaa, payload);
+	if (HAS_INET6(host.mask))
+		ret = dns_resolver(&host, ns_t_aaaa, payload);
 	if (ret)
 		nsError(NO_DATA, hostname);
 
@@ -304,8 +300,8 @@ int dns_query_a_or_aaaa(char *hostname, char *options, payload_t *payload)
 		 * if "ttl" option was set, it takes precedence over
 		 * key.dns_resolver.conf's default_ttl value
 		 */
-		if (hi.ttl)
-			ret = keyctl_set_timeout(key, *hi.ttl);
+		if (host.ttl)
+			ret = keyctl_set_timeout(key, *host.ttl);
 		else
 			ret = keyctl_set_timeout(key, key_expiry);
 

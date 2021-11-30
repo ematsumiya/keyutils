@@ -42,8 +42,7 @@
  */
 static int dns_query_AFSDB(struct host_info *host, payload_t *payload)
 {
-	//return dns_resolver(host, ns_t_afsdb, payload);
-	return dns_resolver(host, ns_t_mx, payload);
+	return dns_resolver(host, ns_t_afsdb, payload);
 }
 
 /*

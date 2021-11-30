@@ -107,7 +107,6 @@ static unsigned int hosts_to_addrs(struct host_info *host, ns_msg *handle,
 	int type;
 	const unsigned char *rdata;
 	int iplen = INET6_ADDRSTRLEN + 8 + 1; /* IPv4/v6 + port + NUL */
-	char ipbuf[iplen];
 
 	rrcount = ns_msg_count(*handle, ns_s_an);
 	rrmax = rrcount;
@@ -126,17 +125,20 @@ static unsigned int hosts_to_addrs(struct host_info *host, ns_msg *handle,
 		ttl = MIN(ns_rr_ttl(rr), ttl);
 		type = ns_rr_type(rr);
 
-		get_ip_str(type, ipbuf, rdata);
+		host->ip = malloc(iplen);
+		if (!host->ip)
+			error("Out of memory");
+
+		get_ip_str(type, host->ip, rdata);
 
 		if (type == ns_t_srv)
 			strcat(host->ip, host->port);
 
 		append_address_to_payload(host->ip, payload);
 
-		info("Type '%s' RR, server name: %s, IP: %*.*s, ttl: %d",
+		info("Type '%s' RR, server name: %s, IP: %s, ttl: %d",
 				print_ns_type(type),
 				host->hostname,
-				iplen, iplen,
 				host->ip, ttl);
 	}
 
@@ -197,7 +199,6 @@ static int get_targets(ns_msg *handle, ns_type type, int ntgts,
 
 		/* increment rdata after reading each field, based on type */
 		switch (type) {
-		case ns_t_mx: // FIXME
 		case ns_t_afsdb:
 			subtype = ns_get16(rdata); rdata += NS_INT16SZ;
 			info("rdata: subtype %d", subtype);
@@ -359,7 +360,7 @@ int dns_resolver(struct host_info *host, ns_type type, payload_t *payload)
 	if (!is_ns_type_valid(type)) {
 		debug("unused ns_type '%s' (%d) in keyutils",
 		      print_ns_type(type), type);
-		//return -1;
+		return -1;
 	}
 
 	debug("Get RR (type '%s') for hostname '%s'",
@@ -380,9 +381,11 @@ int dns_resolver(struct host_info *host, ns_type type, payload_t *payload)
 			newtype = ns_t_aaaa;
 
 		tmp = dns_query(host->hostname, type);
-		if (!tmp)
-			error("Can't query '%s' with type '%s'", host->hostname,
+		if (!tmp) {
+			_error("Can't query '%s' with type '%s'", host->hostname,
 			      print_ns_type(type));
+			goto out_free;
+		}
 
 		maxtgts = get_n_targets(tmp);
 		hosts = calloc(maxtgts, sizeof(*host));
@@ -438,6 +441,8 @@ int dns_resolver(struct host_info *host, ns_type type, payload_t *payload)
 		     payload->index);
 	}
 
+	return 0;
+
 out_free:
 	if (ntgts != 0) {
 		for(i = 0; i < ntgts; i++) {
@@ -455,5 +460,5 @@ out_free:
 			free(handles);
 	}
 
-	return 0;
+	return -1;
 }

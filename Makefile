@@ -100,7 +100,7 @@ endif
 # Normal build rule
 #
 ###############################################################################
-all: keyctl request-key key.dns_resolver cxx
+all: keyctl request-key key.dns_resolver key.tls_handshake cxx
 
 ###############################################################################
 #
@@ -167,6 +167,30 @@ key.dns_resolver: key.dns_resolver.o dns.afsdb.o dns_common.o $(LIB_DEPENDENCY)
 key.dns_resolver.o: key.dns_resolver.c dns_common.o key.dns.h dns_common.h
 dns.afsdb.o: dns.afsdb.c dns_common.o key.dns.h dns_common.h
 dns_common.o: dns_common.c dns_common.h
+
+#
+# TLS stuff
+#
+DEPS = tls_handshake/tls_common.h keyutils.h
+OBJ = key.tls_handshake.o tls_handshake/tls_common.o tls_handshake/tls_client.o tls_handshake/tls_server.o
+
+%.o: %.c $(DEPS) $(DEVELLIB)
+	$(CC) -L. $(CFLAGS) $(LDFLAGS) $(RPATH) -lgnutls -o $@
+#	$(CC) -L. $(CFLAGS) $(LDFLAGS) $(RPATH) -lgnutls -o $@ $<
+
+key.tls_handshake: $(OBJ) $(DEVELLIB)
+	$(CC) -L. $(CFLAGS) $(LDFLAGS) -lgnutls -o $@ $^
+#	$(CC) -L. $(CFLAGS) $(LDFLAGS) -lgnutls -o $@ $^
+
+#key.tls_handshake: key.tls_handshake.o tls_handshake/tls_client.o tls_handshake/tls_server.o tls_handshake/tls_common.o
+#	$(CC) -L. $(CFLAGS) $(LDFLAGS) $(RPATH) -o $@ \
+#		key.tls_handshake.o tls_handshake/tls_client.o tls_handshake/tls_server.o \
+#		tls_handshake/tls_common.o -lgnutls
+#key.tls_handshake.o: key.tls_handshake.c tls_handshake/tls_client.o \
+#	tls_handshake/tls_server.o tls_handshake/tls_common.o tls_handshake/tls_common.h
+#tls_client.o: tls_handshake/tls_client.c tls_handshake/tls_common.o tls_handshake/tls_common.h
+#tls_server.o: tls_handshake/tls_server.c tls_handshake/tls_common.o tls_handshake/tls_common.h
+#tls_common.o: tls_handshake/tls_common.c tls_handshake/tls_common.h
 
 ###############################################################################
 #
@@ -259,8 +283,9 @@ test:
 clean:
 	$(MAKE) -C tests clean
 	$(RM) libkeyutils.so* libkeyutils.a libkeyutils.pc
-	$(RM) keyctl request-key key.dns_resolver
+	$(RM) keyctl request-key key.dns_resolver key.tls_handshake
 	$(RM) *.o *.os *~
+	$(RM) tls_handshake/*.o tls_handshake/*.os tls_handshake/*~
 	$(RM) debugfiles.list debugsources.list
 	$(RM) cxx.stamp
 

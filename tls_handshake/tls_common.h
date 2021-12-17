@@ -34,16 +34,16 @@
 
 #define CAFILE "/etc/ssl/ca-bundle.pem"
 
-/*
 #define DEFAULT_NVME_CLIENT_CERT "/etc/nvme/client.crt"
 #define DEFAULT_NVME_CLIENT_KEY "/etc/nvme/client.key"
 #define DEFAULT_NVME_SERVER_CERT "/etc/nvme/server.crt"
-#define DEFAULT_NVME_SERVER_KEY "/etc/nvme/server.crt"
-*/
+#define DEFAULT_NVME_SERVER_KEY "/etc/nvme/server.key"
+/*
 #define DEFAULT_NVME_CLIENT_CERT "tls_handshake/client.crt"
 #define DEFAULT_NVME_CLIENT_KEY "tls_handshake/client.key"
 #define DEFAULT_NVME_SERVER_CERT "tls_handshake/server.crt"
 #define DEFAULT_NVME_SERVER_KEY "tls_handshake/server.key"
+*/
 
 bool check_gnutls_version(void);
 const char *bin2hex(const void *bin, size_t bin_size);

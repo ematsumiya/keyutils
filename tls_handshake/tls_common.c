@@ -3,7 +3,7 @@
 #include "tls_common.h"
 
 extern int tls_client_start(const char *server, int port, payload_t *payload);
-extern int tls_server_start(char *expected_client, int port, int timeout);
+extern int tls_server_start(char *expected_client, int port, int timeout, payload_t *payload);
 
 static bool is_ip_valid(char *ip)
 {
@@ -264,17 +264,53 @@ void append_data_to_payload(uint8_t *data, size_t len, payload_t *payload)
 		payload->data[payload->index++].iov_len = 1;
 	}
 
-	payload->data[payload->index  ].iov_base = malloc(len);
+	payload->data[payload->index].iov_base = malloc(len);
 	if (!payload->data[payload->index].iov_base) {
 		fprintf(stderr, "out of memory\n");
 		return;
 	}
 
-	memcpy(payload->data[payload->index  ].iov_base, data, len);
+	memcpy(payload->data[payload->index].iov_base, data, len);
 	payload->data[payload->index++].iov_len = len;
 }
 
-int do_tls_handshake(char *upcall_type, char *options, payload_t *payload)
+/*
+ * Dump the payload when debugging
+ */
+void dump_payload(payload_t *payload)
+{
+	size_t plen, n;
+	char *buf, *p;
+	int i;
+
+	plen = 0;
+	for (i = 0; i < payload->index; i++) {
+		n = payload->data[i].iov_len;
+		fprintf(stderr, "%s: seg[%d]: %zu\n", __func__, i, n);
+		plen += n;
+	}
+	if (plen == 0) {
+		fprintf(stderr, "%s: The key instantiation data is empty\n", __func__);
+		return;
+	}
+
+	fprintf(stderr, "%s: total: %zu\n", __func__, plen);
+	buf = malloc(plen + 1);
+	if (!buf)
+		return;
+
+	p = buf;
+	for (i = 0; i < payload->index; i++) {
+		n = payload->data[i].iov_len;
+		memcpy(p, payload->data[i].iov_base, n);
+		p += n;
+	}
+
+	fprintf(stderr, "%s: The key instantiation data is at '0x%p'\n", __func__, buf);
+	free(buf);
+}
+
+int do_tls_handshake(char *desc, char *options, payload_t *payload)
 {
 	int optcount = 0;
 	bool is_client;
@@ -283,7 +319,7 @@ int do_tls_handshake(char *upcall_type, char *options, payload_t *payload)
 	int daemon_timeout = DEFAULT_SERVER_TIMEOUT;
 	int ret;
 
-	if (!upcall_type || !options || !payload)
+	if (!desc || !options || !payload)
 		return -1;
 
 	/*
@@ -306,7 +342,7 @@ int do_tls_handshake(char *upcall_type, char *options, payload_t *payload)
 	 * Callout info format:
 	 * '"server";"expected_client_ip";"port";"timeout";"extra"'
 	 */
-	if (!strcmp(upcall_type, "nvme")) {
+	if (!strcmp(desc, "nvme")) {
 		char *token = strtok(options, ";");
 		while (token) {
 			switch (optcount) {
@@ -358,10 +394,10 @@ int do_tls_handshake(char *upcall_type, char *options, payload_t *payload)
 	if (is_client)
 		ret = tls_client_start(peer_ip, port, payload);
 	else
-		ret = tls_server_start(peer_ip, port, daemon_timeout);
+		ret = tls_server_start(peer_ip, port, daemon_timeout, payload);
 
 	if (ret != 0)
-		fprintf(stderr, "TLS %s failed\n", is_client ? "client" : "server");
+		fprintf(stderr, "TLS %s failed with error %d\n", is_client ? "client" : "server", ret);
 
 	return ret;
 

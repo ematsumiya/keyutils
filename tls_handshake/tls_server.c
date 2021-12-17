@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <linux/tls.h>
 #include "tls_common.h"
 
 #define CRLFILE "crl.pem"
@@ -11,7 +12,7 @@
  */
 #define OCSP_STATUS_FILE "ocsp-status.der"
 
-int tls_server_start(char *expected_client, int port, int timeout)
+int tls_server_start(char *expected_client, int port, int timeout, payload_t *payload)
 {
 	int listenfd;
 	int sockfd, ret;
@@ -75,7 +76,7 @@ int tls_server_start(char *expected_client, int port, int timeout)
 		}
 
 		if (inet_ntop(AF_INET, &sa_cli.sin_addr, ipbuf, sizeof(ipbuf))) {
-			if (strncmp(ipbuf, expected_client, strlen(expected_client))) {
+			if (expected_client && strncmp(ipbuf, expected_client, strlen(expected_client))) {
 				if (strcmp(ipbuf, "0.0.0.0"))
 					fprintf(stderr, "Not expecting any connections from '%s'\n", ipbuf);
 				close(sockfd);
@@ -99,6 +100,51 @@ int tls_server_start(char *expected_client, int port, int timeout)
 				goto err_timeout;
 			}
 			continue;
+		} else {
+			/* copy crypto info to payload, which will be sent back to kernel */
+			struct tls12_crypto_info_aes_gcm_256 *rx_crypto, *tx_crypto;
+			gnutls_datum_t cipher_key;
+			gnutls_datum_t mac_key; /* dummy, unused in TLSv1.3 */
+			gnutls_datum_t iv; /* here, explicit + implicit IV.
+					      on the kernel, iv == explicit (8 bytes)
+					      and salt == implicit (4 bytes) */
+			unsigned char seqn[8];
+
+			rx_crypto = calloc(1, sizeof(*rx_crypto));
+			if (!rx_crypto)
+				return -ENOMEM;
+			tx_crypto = calloc(1, sizeof(*tx_crypto));
+			if (!tx_crypto)
+				return -ENOMEM;
+
+			/* read parameters (RX) */
+			gnutls_record_get_state(session, 1, &mac_key, &iv, &cipher_key, seqn);
+			append_data_to_payload((void *)"rx", 2, payload);
+
+			rx_crypto->info.version = TLS_1_3_VERSION;
+			rx_crypto->info.cipher_type = TLS_CIPHER_AES_GCM_256;
+			memcpy(rx_crypto->iv, iv.data, TLS_CIPHER_AES_GCM_256_IV_SIZE);
+			memcpy(rx_crypto->salt, iv.data + TLS_CIPHER_AES_GCM_256_IV_SIZE, TLS_CIPHER_AES_GCM_256_SALT_SIZE);
+			memcpy(rx_crypto->key, cipher_key.data, TLS_CIPHER_AES_GCM_256_KEY_SIZE);
+			memcpy(rx_crypto->rec_seq, seqn, 8);
+
+			append_data_to_payload((void *)rx_crypto, sizeof(*rx_crypto), payload);
+
+			/* write parameters (TX) */
+			gnutls_record_get_state(session, 0, &mac_key, &iv, &cipher_key, seqn);
+			append_data_to_payload((void *)"tx", 2, payload);
+
+			tx_crypto->info.version = TLS_1_3_VERSION;
+			tx_crypto->info.cipher_type = TLS_CIPHER_AES_GCM_256;
+			memcpy(tx_crypto->iv, iv.data, TLS_CIPHER_AES_GCM_256_IV_SIZE);
+			memcpy(tx_crypto->salt, iv.data + TLS_CIPHER_AES_GCM_256_IV_SIZE, TLS_CIPHER_AES_GCM_256_SALT_SIZE);
+			memcpy(tx_crypto->key, cipher_key.data, TLS_CIPHER_AES_GCM_256_KEY_SIZE);
+			memcpy(tx_crypto->rec_seq, seqn, 8);
+
+			append_data_to_payload((void *)tx_crypto, sizeof(*tx_crypto), payload);
+
+			free(rx_crypto);
+			free(tx_crypto);
 		}
 
 		print_info(session);

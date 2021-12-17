@@ -73,6 +73,8 @@ static int is_debug;
 #define DEFAULT_SERVER_TIMEOUT 10 /* How long should the server wait for ClientHello */
 unsigned int server_timeout = DEFAULT_SERVER_TIMEOUT;
 
+extern void dump_payload(payload_t *payload);
+
 /*
  * Read the config file.
  */
@@ -386,8 +388,16 @@ int main(int argc, char *argv[])
 	payload = malloc(sizeof(payload_t));
 
 	upcaller = index(keyend, ';');
-	if (!upcaller)
-		return do_tls_handshake(keyend, callout_info, payload);
+	if (!upcaller) {
+		ret = do_tls_handshake(keyend, callout_info, payload);
+		if (!ret) {
+			dump_payload(payload);
+			ret = keyctl_instantiate_iov(tls_key, payload->data, payload->index, 0);
+			if (ret == -1)
+				fprintf(stderr, "failed to instantiate key: %m\n");
+		}
+		return ret;
+	}
 
 	qtlen = upcaller - keyend;
 	upcaller++;
@@ -396,7 +406,14 @@ int main(int argc, char *argv[])
 
 	if ((qtlen == sizeof(nvme_upcall_type) - 1 && !memcmp(keyend, nvme_upcall_type, sizeof(nvme_upcall_type) - 1))) {
 		fprintf(stdout, "Starting TLS handshake for: '%s' callout_info '%s'\n", upcaller, callout_info);
-		return do_tls_handshake(upcaller, callout_info, payload);
+		ret = do_tls_handshake(upcaller, callout_info, payload);
+		if (!ret) {
+			dump_payload(payload);
+			ret = keyctl_instantiate_iov(tls_key, payload->data, payload->index, 0);
+			if (ret == -1)
+				fprintf(stderr, "failed to instantiate key: %m\n");
+		}
+		return ret;
 	}
 
 	fprintf(stderr, "Query type: \"%*.*s\" is not supported\n", qtlen, qtlen, keyend);

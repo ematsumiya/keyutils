@@ -1,4 +1,5 @@
 #include "tls_common.h"
+#include <linux/tls.h>
 #include "dns_common.h"
 
 /*
@@ -79,26 +80,54 @@ int tls_client_start(const char *server, int port, payload_t *payload)
 		goto end;
 	} else {
 		/* copy crypto info to payload, which will be sent back to kernel */
+		struct tls12_crypto_info_aes_gcm_256 *rx_crypto, *tx_crypto;
 		gnutls_datum_t cipher_key;
-		gnutls_datum_t mac_key;
-		gnutls_datum_t iv;
+		gnutls_datum_t mac_key; /* dummy, unused in TLSv1.3 */
+		gnutls_datum_t iv; /* here, explicit + implicit IV.
+	       			      on the kernel, iv == explicit (8 bytes)
+				      and salt == implicit (4 bytes) */
 		unsigned char seqn[8];
 
+		rx_crypto = calloc(1, sizeof(*rx_crypto));
+		if (!rx_crypto)
+			return -ENOMEM;
+		tx_crypto = calloc(1, sizeof(*tx_crypto));
+		if (!tx_crypto)
+			return -ENOMEM;
+
+		/* read parameters (RX) */
 		gnutls_record_get_state(session, 1, &mac_key, &iv, &cipher_key, seqn);
+		append_data_to_payload((void *)"rx", 2, payload);
 
-		/* mac_key might be empty */
-		if (mac_key.size != 0)
-			append_data_to_payload(mac_key.data, mac_key.size, payload);
+		rx_crypto->info.version = TLS_1_3_VERSION;
+		rx_crypto->info.cipher_type = TLS_CIPHER_AES_GCM_256;
+		memcpy(rx_crypto->iv, iv.data, TLS_CIPHER_AES_GCM_256_IV_SIZE);
+		memcpy(rx_crypto->salt, iv.data + TLS_CIPHER_AES_GCM_256_IV_SIZE, TLS_CIPHER_AES_GCM_256_SALT_SIZE);
+		memcpy(rx_crypto->key, cipher_key.data, TLS_CIPHER_AES_GCM_256_KEY_SIZE);
+		memcpy(rx_crypto->rec_seq, seqn, 8);
 
-		append_data_to_payload(cipher_key.data, cipher_key.size, payload);
-		append_data_to_payload(iv.data, iv.size, payload);
-		append_data_to_payload(seqn, 8, payload);
+		append_data_to_payload((void *)rx_crypto, sizeof(*rx_crypto), payload);
+
+		/* write parameters (TX) */
+		gnutls_record_get_state(session, 0, &mac_key, &iv, &cipher_key, seqn);
+		append_data_to_payload((void *)"tx", 2, payload);
+
+		tx_crypto->info.version = TLS_1_3_VERSION;
+		tx_crypto->info.cipher_type = TLS_CIPHER_AES_GCM_256;
+		memcpy(tx_crypto->iv, iv.data, TLS_CIPHER_AES_GCM_256_IV_SIZE);
+		memcpy(tx_crypto->salt, iv.data + TLS_CIPHER_AES_GCM_256_IV_SIZE, TLS_CIPHER_AES_GCM_256_SALT_SIZE);
+		memcpy(tx_crypto->key, cipher_key.data, TLS_CIPHER_AES_GCM_256_KEY_SIZE);
+		memcpy(tx_crypto->rec_seq, seqn, 8);
+
+		append_data_to_payload((void *)tx_crypto, sizeof(*tx_crypto), payload);
+
+		free(rx_crypto);
+		free(tx_crypto);
 	}
 
-	print_info(session);
-
+	//print_info(session);
 	gnutls_bye(session, GNUTLS_SHUT_RDWR);
-
+	ret = 0;
 end:
 	tcp_close(sockfd);
 
@@ -106,5 +135,5 @@ end:
 	gnutls_certificate_free_credentials(xcred);
 	gnutls_global_deinit();
 
-	return 0;
+	return ret;
 }

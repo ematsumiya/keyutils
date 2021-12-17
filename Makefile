@@ -241,6 +241,7 @@ endif
 	$(INSTALL) -D request-key $(DESTDIR)$(SBINDIR)/request-key
 	$(INSTALL) -D request-key-debug.sh $(DESTDIR)$(SHAREDIR)/request-key-debug.sh
 	$(INSTALL) -D key.dns_resolver $(DESTDIR)$(SBINDIR)/key.dns_resolver
+	$(INSTALL) -D key.tls_handshake $(DESTDIR)$(SBINDIR)/key.tls_handshake
 	$(INSTALL) -D -m 0644 request-key.conf $(DESTDIR)$(ETCDIR)/request-key.conf
 	mkdir -p $(DESTDIR)$(ETCDIR)/request-key.d
 	mkdir -p $(DESTDIR)$(ETCDIR)/keyutils

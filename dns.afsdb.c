@@ -129,6 +129,8 @@ void afs_lookup_VL_servers(const char *cell, char *options, long config_ttl)
 		ret = afs_instantiate(payload, ttl);
 out_free:
 	free_hostinfo(&host);
+	while (host.nslen-- > 0)
+		free(host.nameservers[host.nslen]);
 	free(payload);
 
 	exit(ret);

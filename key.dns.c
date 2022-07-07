@@ -168,6 +168,19 @@ void dump_payload(payload_t *payload)
 	free(buf);
 }
 
+static int get_af_from_addr(const char *addr)
+{
+	char buf[MAX_ADDR_LEN];
+	int ret;
+
+	if ((ret =inet_pton(AF_INET, addr, buf)))
+		return AF_INET;
+	else if ((ret = inet_pton(AF_INET6, addr, buf)))
+		return AF_INET6;
+
+	return (!ret) ? -EINVAL : -EAFNOSUPPORT;
+}
+
 static char *get_addr_str(int af, char *s, const void *data)
 {
 	switch (af) {
@@ -377,6 +390,7 @@ static int parse_rr(hostinfo_t *host, ns_rr rr)
 	const unsigned char *rdata;
 	unsigned short prio, weight, port; /* for ns_t_srv */
 	int subtype = 0; /* for ns_t_afsdb */
+	char *addrbuf = NULL; /* for ns_t_a/aaaa */
 	ns_type rrtype;
 	int ret = 0;
 
@@ -405,16 +419,23 @@ static int parse_rr(hostinfo_t *host, ns_rr rr)
 	case ns_t_a:
 	case ns_t_aaaa:
 		if (host->naddrs == MAX_ADDRS) {
-			warn("Can't add more IP addresses (max '%d' reached)",
+			warn("Can't add more IP addresses, max '%d' reached",
 			     MAX_ADDRS);
-			break;
+			return -ENOMEM;
 		}
 
-		CALLOC_CHECK(host->addrs[host->naddrs], 1, MAX_ADDR_LEN);
-		get_addr_str(ns2af(rrtype), host->addrs[host->naddrs], rdata);
+		CALLOC_CHECK(addrbuf, 1, MAX_ADDR_LEN);
+		get_addr_str(ns2af(rrtype), addrbuf, rdata);
 
-		debug("rdata: addr=%s", host->addrs[host->naddrs]);
+		if (!strcmp(addrbuf, "0.0.0.0") || !strcmp(addrbuf, "::")) {
+			info("Discarding invalid address '%s'", addrbuf);
+			free(addrbuf);
+			return -EINVAL;
+		}
 
+		debug("rdata: addr=%s", addrbuf);
+
+		host->addrs[host->naddrs] = addrbuf;
 		host->naddrs++;
 		break;
 	default:
@@ -460,6 +481,7 @@ static int get_targets(hostinfo_t *host, hostinfo_t **targets, int *maxn)
 
 	for (i = 0; i < *maxn; i++) {
 		hostinfo_t *target = NULL;
+		int ns;
 
 		if (ns_parserr(host->handle, ns_s_an, i, &rr)) {
 			error("ns_parserr failed: %m");
@@ -482,6 +504,9 @@ static int get_targets(hostinfo_t *host, hostinfo_t **targets, int *maxn)
 		target->handle = NULL;
 		target->af = host->af;
 		target->single_addr = host->single_addr;
+		for (ns = 0; ns < host->nslen; ns++)
+			target->nameservers[ns] = host->nameservers[ns];
+		target->nslen = host->nslen;
 
 		n++;
 		continue;
@@ -546,6 +571,43 @@ static int resolve_host(hostinfo_t *host, int n)
 	return ret;
 }
 
+/* Sets a nameserver to use in @sp */
+static int set_ns(res_state sp, char *addr)
+{
+	int ret, af;
+
+	if (!sp || !addr || !strlen(addr))
+		return -EINVAL;
+
+	af = get_af_from_addr(addr);
+	if (af < 0) {
+		nsWarn("Can't convert nameserver address '%s'", addr);
+		return -EINVAL;
+	}
+
+	ret = inet_pton(af, addr, &sp->nsaddr_list[0].sin_addr.s_addr);
+	if (!ret) {
+		nsWarn("Invalid nameserver address '%s'", addr);
+		return -EINVAL;
+	} else if (ret == -1) {
+		nsWarn("Invalid address family '%d'", af);
+		return -EAFNOSUPPORT;
+	}
+
+	sp->nscount = 1;
+	sp->nsaddr_list[0].sin_family = af;
+	sp->nsaddr_list[0].sin_port = htons(53);
+
+	sp->options = RES_DEFAULT;
+	/* RES_DFLRETRY is 2 by default (resolv.h), but the retry logic there
+	 * is different from what we do here; see more below */
+	sp->retry = RES_DFLRETRY;
+
+	debug("using nameserver: %s", addr);
+
+	return 0;
+}
+
 /*
  * Makes the actual query
  *
@@ -559,6 +621,7 @@ static int resolve_host(hostinfo_t *host, int n)
 static int dns_query(hostinfo_t *host)
 {
 	res_state sp;
+	int maxns, ns;
 	int ret, len;
 
 	if (!host)
@@ -579,12 +642,46 @@ static int dns_query(hostinfo_t *host)
 		return -ENODEV;
 	}
 
+	ns = 0;
+	ret = 0;
+	maxns = clamp(host->nslen, 0, MAXNS);
+
+	/*
+	 * The retry logic here for nameserver rotation is based on the answer
+	 * containing 1 or more valid resource records, instead of the NS
+	 * server being down/unreachable (as libresolv does internally).
+	 * So the RES_ROTATE option flag doesn't apply here since we'll be
+	 * trying a single NS a time. Ditto for sp->retry (used for DNS over
+	 * TCP (RES_USEVC)).
+	 */
+retry:
+	/* Find the next suitable nameserver in @host::nameservers */
+	while (ns < maxns && (ret = set_ns(sp, host->nameservers[ns])))
+		ns++;
+
+	if (ret && ns == maxns) {
+		error("Can't use any of the nameservers provided.");
+		ret = get_err(-ECONNREFUSED);
+		goto out;
+	}
+
 	h_errno = 0;
 	/* query the dns for a @type resource record */
 	len = res_nquery(sp, host->hostname, ns_c_in, host->type, answer.buf,
 			 sizeof(answer));
 
 	if (len < 0 || len > NS_MAXMSG) {
+		if (host->nslen > 0) {
+			if (ret == -ECONNREFUSED)
+				error("Can't reach nameserver '%s'",
+				      host->nameservers[ns]);
+			else
+				error("Nameserver '%s' can't resolve '%s'",
+				     host->nameservers[ns], host->hostname);
+			ns++;
+			if (ns < maxns)
+				goto retry;
+		}
 		ret = get_err(-ENODATA);
 		goto out;
 	}

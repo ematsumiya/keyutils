@@ -65,10 +65,15 @@ typedef struct _key_dns_conf {
 void parse_opts(hostinfo_t *host, char *options)
 {
 	char *k, *val;
+	int ns;
 	bool invalid;
 
 	if (!host || !options)
 		return;
+
+	for (ns = 0; ns < MAXNS; ns++)
+		host->nameservers[ns] = NULL;
+	ns = 0;
 
 	do {
 		invalid = false;
@@ -95,14 +100,38 @@ void parse_opts(hostinfo_t *host, char *options)
 			host->type = ns_t_aaaa;
 		} else if (strcmp(k, "list") == 0) {
 			host->single_addr = false;
+		} else if (strcmp(k, "ns") == 0) {
+			if (ns < MAXNS) {
+				size_t vlen = strlen(val);
+				if (vlen >= INET6_ADDRSTRLEN) {
+					debug("%s: value too long for ns= key: %s",
+					      __func__, val);
+					invalid = true;
+					goto invalid;
+				}
+				/*
+				 * Blindly copy the specified address here,
+				 * it'll be checked later in dns_query().
+				 * Must be freed by callers.
+				 */
+				STRNDUP_CHECK(host->nameservers[ns], val, vlen);
+				ns++;
+				host->nslen = ns;
+			} else {
+				warn("Max of %d nameservers allowed. Skipping %s=%s",
+				     MAXNS, k, val);
+				continue;
+			}
 		} else {
 			invalid = true;
 		}
 
-		if (invalid && !val)
-			warn("Skipping invalid opt %s", k);
-		else if (invalid && val)
-			warn("Skipping invalid opt %s=%s", k, val);
+invalid:
+		if (invalid)
+			if (val)
+				warn("Skipping invalid opt %s=%s", k, val);
+			else
+				warn("Skipping invalid opt %s", k);
 		else if (val)
 			debug("Opt %s=%s", k, val);
 		else
@@ -118,6 +147,8 @@ void parse_opts(hostinfo_t *host, char *options)
  *   "ipv4": to request only IPv4 addresses
  *   "ipv6": to request only IPv6 addresses
  *   "list": to get multiple addresses
+ *   "ns=ADDR": use ADDR as a custom nameserver. Max of 3 nameservers is
+ *              allowed (MAXNS from libresolv).
  * @config_ttl: TTL gotten from key.dns_resolver.conf (callers must set this to
  *		-1 if no config)
  *		XXX: might have to change this to a key_dns_conf_t if config
@@ -189,6 +220,8 @@ int dns_query_a_or_aaaa(const char *hostname, char *options, long config_ttl)
 
 out_free:
 	free_hostinfo(&host);
+	while (host.nslen-- > 0)
+		free(host.nameservers[host.nslen]);
 	free(payload);
 
 	exit(ret);

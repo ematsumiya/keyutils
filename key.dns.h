@@ -182,6 +182,8 @@ struct hostinfo {
 	long ttl;
 	ns_msg *handle;
 	bool single_addr;
+	char *nameservers[MAXNS];
+	int nslen;
 };
 
 typedef struct hostinfo hostinfo_t;
@@ -204,6 +206,9 @@ static inline void dump_host(hostinfo_t *host)
 	/* skip af; it's used only internally for resolving and could contain
 	 * incoherent information */
 	debug("  ttl: %ld", host->ttl);
+	if (host->nslen > 0)
+		for (i = 0; i < host->nslen; i++)
+			debug("  custom ns[%d]: %s", i, host->nameservers[i]);
 }
 
 static inline void free_hostinfo(hostinfo_t *host)

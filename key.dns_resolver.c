@@ -49,399 +49,138 @@ static const char afsdb_query_type[] = "afsdb";
 static const char *config_file = "/etc/keyutils/key.dns_resolver.conf";
 static bool config_specified = false;
 key_serial_t key;
-static int verbose;
+int verbose;
 int debug_mode;
-unsigned mask = INET_ALL;
-unsigned int key_expiry = 5;
+long key_expiry = DEFAULT_KEY_TTL;
 
-
-/*
- * segmental payload
- */
-struct iovec payload[N_PAYLOAD];
-int payload_index;
-
-/*
- * Print an error to stderr or the syslog, negate the key being created and
- * exit
- */
-void error(const char *fmt, ...)
+void parse_opts(hostinfo_t *host, char *options)
 {
-	va_list va;
+	char *k, *val;
+	bool invalid;
 
-	va_start(va, fmt);
-	if (isatty(2)) {
-		vfprintf(stderr, fmt, va);
-		fputc('\n', stderr);
-	} else {
-		vsyslog(LOG_ERR, fmt, va);
-	}
-	va_end(va);
-
-	/*
-	 * on error, negatively instantiate the key ourselves so that we can
-	 * make sure the kernel doesn't hang it off of a searchable keyring
-	 * and interfere with the next attempt to instantiate the key.
-	 */
-	if (!debug_mode)
-		keyctl_negate(key, 1, KEY_REQKEY_DEFL_DEFAULT);
-
-	exit(1);
-}
-
-#define error(FMT, ...) error("Error: " FMT, ##__VA_ARGS__);
-
-/*
- * Just print an error to stderr or the syslog
- */
-void _error(const char *fmt, ...)
-{
-	va_list va;
-
-	va_start(va, fmt);
-	if (isatty(2)) {
-		vfprintf(stderr, fmt, va);
-		fputc('\n', stderr);
-	} else {
-		vsyslog(LOG_ERR, fmt, va);
-	}
-	va_end(va);
-}
-
-/*
- * Print a warning to stderr or the syslog
- */
-void warning(const char *fmt, ...)
-{
-	va_list va;
-
-	va_start(va, fmt);
-	if (isatty(2)) {
-		vfprintf(stderr, fmt, va);
-		fputc('\n', stderr);
-	} else {
-		vsyslog(LOG_WARNING, fmt, va);
-	}
-	va_end(va);
-}
-
-/*
- * Print status information
- */
-void info(const char *fmt, ...)
-{
-	va_list va;
-
-	if (verbose < 1)
+	if (!host || !options)
 		return;
 
-	va_start(va, fmt);
-	if (isatty(1)) {
-		fputs("I: ", stdout);
-		vfprintf(stdout, fmt, va);
-		fputc('\n', stdout);
-	} else {
-		vsyslog(LOG_INFO, fmt, va);
-	}
-	va_end(va);
-}
-
-/*
- * Print a nameserver error and exit
- */
-static const int ns_errno_map[] = {
-	[0]			= ECONNREFUSED,
-	[HOST_NOT_FOUND]	= ENODATA,
-	[TRY_AGAIN]		= EAGAIN,
-	[NO_RECOVERY]		= ECONNREFUSED,
-	[NO_DATA]		= ENODATA,
-};
-
-void _nsError(int err, const char *domain)
-{
-	if (isatty(2))
-		fprintf(stderr, "NS:%s: %s.\n", domain, hstrerror(err));
-	else
-		syslog(LOG_INFO, "%s: %s", domain, hstrerror(err));
-
-	if (err >= sizeof(ns_errno_map) / sizeof(ns_errno_map[0]))
-		err = ECONNREFUSED;
-	else
-		err = ns_errno_map[err];
-
-	info("Reject the key with error %d", err);
-}
-
-void nsError(int err, const char *domain)
-{
-	unsigned timeout;
-	int ret;
-
-	_nsError(err, domain);
-
-	switch (err) {
-	case TRY_AGAIN:
-		timeout = 1;
-		break;
-	case 0:
-	case NO_RECOVERY:
-		timeout = 10;
-		break;
-	default:
-		timeout = 1 * 60;
-		break;
-	}
-
-	if (!debug_mode) {
-		ret = keyctl_reject(key, timeout, err, KEY_REQKEY_DEFL_DEFAULT);
-		if (ret == -1)
-			error("%s: keyctl_reject: %m", __func__);
-	}
-	exit(0);
-}
-
-/*
- * Print debugging information
- */
-void debug(const char *fmt, ...)
-{
-	va_list va;
-
-	if (verbose < 2)
-		return;
-
-	va_start(va, fmt);
-	if (isatty(1)) {
-		fputs("D: ", stdout);
-		vfprintf(stdout, fmt, va);
-		fputc('\n', stdout);
-	} else {
-		vsyslog(LOG_DEBUG, fmt, va);
-	}
-	va_end(va);
-}
-
-/*
- * Append an address to the payload segment list
- */
-void append_address_to_payload(const char *addr)
-{
-	size_t sz = strlen(addr);
-	char *copy;
-	int loop;
-
-	debug("append '%s'", addr);
-
-	if (payload_index + 2 > N_PAYLOAD - 1)
-		return;
-
-	/* discard duplicates */
-	for (loop = 0; loop < payload_index; loop++)
-		if (payload[loop].iov_len == sz &&
-		    memcmp(payload[loop].iov_base, addr, sz) == 0)
-			return;
-
-	copy = malloc(sz);
-	if (!copy)
-		error("%s: malloc: %m", __func__);
-	memcpy(copy, addr, sz);
-
-	if (payload_index != 0) {
-		payload[payload_index  ].iov_base = ",";
-		payload[payload_index++].iov_len = 1;
-	}
-	payload[payload_index  ].iov_base = copy;
-	payload[payload_index++].iov_len = sz;
-}
-
-/*
- * Dump the payload when debugging
- */
-void dump_payload(void)
-{
-	size_t plen, n;
-	char *buf, *p;
-	int loop;
-
-	if (debug_mode)
-		verbose = 1;
-	if (verbose < 1)
-		return;
-
-	plen = 0;
-	for (loop = 0; loop < payload_index; loop++) {
-		n = payload[loop].iov_len;
-		debug("seg[%d]: %zu", loop, n);
-		plen += n;
-	}
-	if (plen == 0) {
-		info("The key instantiation data is empty");
-		return;
-	}
-
-	debug("total: %zu", plen);
-	buf = malloc(plen + 1);
-	if (!buf)
-		return;
-
-	p = buf;
-	for (loop = 0; loop < payload_index; loop++) {
-		n = payload[loop].iov_len;
-		memcpy(p, payload[loop].iov_base, n);
-		p += n;
-	}
-
-	info("The key instantiation data is '%s'", buf);
-	info("The expiry time is %us", key_expiry);
-	free(buf);
-}
-
-/*
- * Perform address resolution on a hostname and add the resulting address as a
- * string to the list of payload segments.
- */
-int dns_resolver(const char *server_name, const char *port)
-{
-	struct addrinfo hints, *addr, *ai;
-	char buf[INET6_ADDRSTRLEN + 8 + 1];
-	int ret, len;
-	void *sa;
-
-	debug("Resolve '%s' with %x", server_name, mask);
-
-	memset(&hints, 0, sizeof(hints));
-	switch (mask & INET_ALL) {
-	case INET_IP4_ONLY:	hints.ai_family = AF_INET;	debug("IPv4"); break;
-	case INET_IP6_ONLY:	hints.ai_family = AF_INET6;	debug("IPv6"); break;
-	default: break;
-	}
-
-	/* resolve name to ip */
-	ret = getaddrinfo(server_name, NULL, &hints, &addr);
-	if (ret) {
-		info("unable to resolve hostname: %s [%s]",
-		     server_name, gai_strerror(ret));
-		return -1;
-	}
-
-	for (ai = addr; ai; ai = ai->ai_next) {
-		debug("RR: %x,%x,%x,%x,%x,%s",
-		      ai->ai_flags, ai->ai_family,
-		      ai->ai_socktype, ai->ai_protocol,
-		      ai->ai_addrlen, ai->ai_canonname);
-
-		/* convert address to string */
-		switch (ai->ai_family) {
-		case AF_INET:
-			if (!(mask & INET_IP4_ONLY))
-				continue;
-			sa = &(((struct sockaddr_in *)ai->ai_addr)->sin_addr);
-			len = INET_ADDRSTRLEN;
-			break;
-		case AF_INET6:
-			if (!(mask & INET_IP6_ONLY))
-				continue;
-			sa = &(((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr);
-			len = INET6_ADDRSTRLEN;
-			break;
-		default:
-			debug("Address of unknown family %u", addr->ai_family);
+	do {
+		invalid = false;
+		k = options;
+		options = strchr(options, ' ');
+		if (!options)
+			options = k + strlen(k);
+		else
+			*options++ = '\0';
+		if (!*k)
 			continue;
+		if (strchr(k, ','))
+			error_ex("Option name '%s' contains a comma", k);
+
+		val = strchr(k, '=');
+		if (val)
+			*val++ = '\0';
+
+		if (strcmp(k, "ipv4") == 0) {
+			host->af = AF_INET;
+			host->type = ns_t_a;
+		} else if (strcmp(k, "ipv6") == 0) {
+			host->af = AF_INET6;
+			host->type = ns_t_aaaa;
+		} else if (strcmp(k, "list") == 0) {
+			host->single_addr = false;
+		} else {
+			invalid = true;
 		}
 
-		if (!inet_ntop(ai->ai_family, sa, buf, len))
-			error("%s: inet_ntop: %m", __func__);
-
-		if (port)
-			strcat(buf, port);
-		append_address_to_payload(buf);
-		if (mask & ONE_ADDR_ONLY)
-			break;
-	}
-
-	freeaddrinfo(addr);
-	return 0;
+		if (invalid && !val)
+			warn("Skipping invalid opt %s", k);
+		else if (invalid && val)
+			warn("Skipping invalid opt %s=%s", k, val);
+		else if (val)
+			debug("Opt %s=%s", k, val);
+		else
+			debug("Opt %s", k);
+	} while (*options);
 }
 
 /*
  * Look up a A and/or AAAA records to get host addresses
  *
- * The callout_info is parsed for request options.  For instance, "ipv4" to
- * request only IPv4 addresses, "ipv6" to request only IPv6 addresses and
- * "list" to get multiple addresses.
+ * @hostname: hostname to query for
+ * @options is parsed for request options:
+ *   "ipv4": to request only IPv4 addresses
+ *   "ipv6": to request only IPv6 addresses
+ *   "list": to get multiple addresses
  */
 static __attribute__((noreturn))
 int dns_query_a_or_aaaa(const char *hostname, char *options)
 {
-	int ret;
+	payload_t *payload = NULL;
+	hostinfo_t host = { 0 };
+	int ret = 0;
 
-	debug("Get A/AAAA RR for hostname:'%s', options:'%s'",
+	if (!hostname)
+		error_ex("%s: missing hostname", __func__);
+
+	debug("Query A/AAAA records for hostname:'%s', options:'%s'",
 	      hostname, options);
 
-	if (!options[0]) {
-		/* legacy mode */
-		mask = INET_IP4_ONLY | ONE_ADDR_ONLY;
-	} else {
-		char *k, *val;
+	host.af = AF_UNSPEC;
+	host.single_addr = true;
+	host.type = ns_t_any;
 
-		mask = INET_ALL | ONE_ADDR_ONLY;
+	parse_opts(&host, options);
 
-		do {
-			k = options;
-			options = strchr(options, ' ');
-			if (!options)
-				options = k + strlen(k);
-			else
-				*options++ = '\0';
-			if (!*k)
-				continue;
-			if (strchr(k, ','))
-				error("Option name '%s' contains a comma", k);
-
-			val = strchr(k, '=');
-			if (val)
-				*val++ = '\0';
-
-			debug("Opt %s", k);
-
-			if (strcmp(k, "ipv4") == 0) {
-				mask &= ~INET_ALL;
-				mask |= INET_IP4_ONLY;
-			} else if (strcmp(k, "ipv6") == 0) {
-				mask &= ~INET_ALL;
-				mask |= INET_IP6_ONLY;
-			} else if (strcmp(k, "list") == 0) {
-				mask &= ~ONE_ADDR_ONLY;
-			}
-
-		} while (*options);
-	}
+	CALLOC_CHECK(payload, 1, sizeof(payload_t));
+	STRNDUP_CHECK(host.hostname, hostname, strlen(hostname));
+	ret = h_errno = 0;
 
 	/* Turn the hostname into IP addresses */
-	ret = dns_resolver(hostname, NULL);
-	if (ret)
-		nsError(NO_DATA, hostname);
+	ret = dns_resolver(&host, payload);
 
 	/* handle a lack of results */
-	if (payload_index == 0)
-		nsError(NO_DATA, hostname);
+	if (ret || payload->index == 0) {
+		ret = get_err(0);
+		goto out_free;
+	}
 
-	/* must include a NUL char at the end of the payload */
-	payload[payload_index].iov_base = "";
-	payload[payload_index++].iov_len = 1;
-	dump_payload();
+	dump_payload(payload);
+	info("Key timeout will be %ld seconds", host.ttl);
 
 	/* load the key with data key */
 	if (!debug_mode) {
-		ret = keyctl_set_timeout(key, key_expiry);
-		if (ret == -1)
+		unsigned int ttl;
+
+		/*
+		 * If TTL was set through the config file (key_expiry),
+		 * it takes precedence over the one from the DNS record (stored
+		 * in host.ttl).
+		 */
+		if (key_expiry > -1)
+			ttl = (unsigned int)key_expiry;
+		else if (host.ttl > -1)
+			ttl = (unsigned int)host.ttl;
+		else
+			/* Fallback to default value if dns_resolver() couldn't
+			 * get TTL for some reason */
+			ttl = DEFAULT_KEY_TTL;
+
+		ret = keyctl_set_timeout(key, ttl);
+		if (ret) {
 			error("%s: keyctl_set_timeout: %m", __func__);
-		ret = keyctl_instantiate_iov(key, payload, payload_index, 0);
+			goto out_free;
+		}
+
+		info("Key set to timeout in %u seconds", ttl);
+
+		ret = keyctl_instantiate_iov(key, payload->data, payload->index, 0);
 		if (ret == -1)
 			error("%s: keyctl_instantiate: %m", __func__);
 	}
 
-	exit(0);
+out_free:
+	free_hostinfo(&host);
+	free(payload);
+
+	exit(ret);
 }
 
 /*
@@ -451,7 +190,8 @@ static void read_config(void)
 {
 	FILE *f;
 	char buf[4096], *b, *p, *k, *v;
-	unsigned int line = 0, u;
+	unsigned int line = 0;
+	long u;
 	int n;
 
 	info("READ CONFIG %s", config_file);
@@ -555,15 +295,15 @@ static void read_config(void)
 		if (strcmp(k, "default_ttl") == 0) {
 			if (!v)
 				goto missing_value;
-			if (sscanf(v, "%u%n", &u, &n) != 1)
+			if (sscanf(v, "%ld%n", &u, &n) != 1)
 				goto bad_value;
 			if (v[n])
 				goto extra_data;
-			if (u < 1 || u > INT_MAX)
+			if (u < 1 || u > LONG_MAX)
 				goto out_of_range;
 			key_expiry = u;
 		} else {
-			warning("%s:%u: Unknown option '%s'", config_file, line, k);
+			warn("%s:%u: Unknown option '%s'", config_file, line, k);
 		}
 	}
 
@@ -591,7 +331,7 @@ out_of_range:
 static __attribute__((noreturn))
 void config_dumper(void)
 {
-	printf("default_ttl = %u\n", key_expiry);
+	printf("default_ttl = %ld\n", key_expiry);
 	exit(0);
 }
 
@@ -634,6 +374,8 @@ int main(int argc, char *argv[])
 	char *buf = NULL, *name;
 	bool dump_config = false;
 
+	key_expiry = -1;
+
 	openlog(prog, 0, LOG_DAEMON);
 
 	while ((ret = getopt_long(argc, argv, "c:vDV", long_options, NULL)) != -1) {
@@ -667,6 +409,7 @@ int main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 	read_config();
+
 	if (dump_config)
 		config_dumper();
 
@@ -676,27 +419,27 @@ int main(int argc, char *argv[])
 
 		/* get the key ID */
 		if (!**argv)
-			error("Invalid blank key ID");
+			error_ex("Invalid blank key ID");
 		key = strtol(*argv, &p, 10);
 		if (*p)
-			error("Invalid key ID format");
+			error_ex("Invalid key ID format");
 
 		/* get the key description (of the form "x;x;x;x;<query_type>:<name>") */
 		ret = keyctl_describe_alloc(key, &buf);
 		if (ret == -1)
-			error("keyctl_describe_alloc failed: %m");
+			error_ex("keyctl_describe_alloc failed: %m");
 
 		/* get the callout_info (which can supply options) */
 		ret = keyctl_read_alloc(KEY_SPEC_REQKEY_AUTH_KEY, (void **)&callout_info);
 		if (ret == -1)
-			error("Invalid key callout_info read: %m");
+			error_ex("Invalid key callout_info read: %m");
 	} else {
 		if (argc != 2)
 			usage();
 
 		ret = asprintf(&buf, "%s;-1;-1;0;%s", key_type, argv[0]);
 		if (ret < 0)
-			error("Error %m");
+			error_ex("Error %m");
 		callout_info = argv[1];
 	}
 
@@ -706,20 +449,20 @@ int main(int argc, char *argv[])
 
 	p = strchr(buf, ';');
 	if (!p)
-		error("Badly formatted key description '%s'", buf);
+		error_ex("Badly formatted key description '%s'", buf);
 	ktlen = p - buf;
 
 	/* make sure it's the type we are expecting */
 	if (ktlen != sizeof(key_type) - 1 ||
 	    memcmp(buf, key_type, ktlen) != 0)
-		error("Key type is not supported: '%*.*s'", ktlen, ktlen, buf);
+		error_ex("Key type is not supported: '%*.*s'", ktlen, ktlen, buf);
 
 	keyend = buf + ktlen + 1;
 
 	/* the actual key description follows the last semicolon */
 	keyend = rindex(keyend, ';');
 	if (!keyend)
-		error("Invalid key description: %s", buf);
+		error_ex("Invalid key description: %s", buf);
 	keyend++;
 
 	name = index(keyend, ':');
@@ -736,7 +479,7 @@ int main(int argc, char *argv[])
 	    (qtlen == sizeof(aaaa_query_type) - 1 &&
 	     memcmp(keyend, aaaa_query_type, sizeof(aaaa_query_type) - 1) == 0)
 	    ) {
-		info("Do DNS query of A/AAAA type for:'%s' mask:'%s'",
+		info("Do DNS query of A/AAAA type for '%s', with options '%s'",
 		     name, callout_info);
 		dns_query_a_or_aaaa(name, callout_info);
 	}
@@ -744,10 +487,11 @@ int main(int argc, char *argv[])
 	if (qtlen == sizeof(afsdb_query_type) - 1 &&
 	    memcmp(keyend, afsdb_query_type, sizeof(afsdb_query_type) - 1) == 0
 	    ) {
-		info("Do AFS VL server query for:'%s' mask:'%s'",
+		info("Do AFS VL server query for '%s', with options '%s'",
 		     name, callout_info);
-		afs_look_up_VL_servers(name, callout_info);
+		afs_lookup_VL_servers(name, callout_info);
 	}
 
 	error("Query type: \"%*.*s\" is not supported", qtlen, qtlen, keyend);
+	exit(-EINVAL);
 }

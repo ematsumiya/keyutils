@@ -246,6 +246,6 @@ void dump_payload(payload_t *payload);
 int dns_resolver(hostinfo_t *host, payload_t *payload);
 
 /* AFS-specific DNS query function */
-void afs_lookup_VL_servers(const char *cell, char *options);
+void afs_lookup_VL_servers(const char *cell, char *options, long config_ttl);
 
 #endif /* _KEY_DNS_H */

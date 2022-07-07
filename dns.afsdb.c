@@ -63,11 +63,12 @@ static int afs_instantiate(payload_t *payload, unsigned int ttl)
  * Lookup VL servers for AFS.
  */
 __attribute__((noreturn))
-void afs_lookup_VL_servers(const char *cell, char *options)
+void afs_lookup_VL_servers(const char *cell, char *options, long config_ttl)
 {
 	payload_t *payload = NULL;
 	struct hostinfo host = { 0 };
 	char *vlsrv_name = NULL;
+	unsigned int ttl;
 	int ret = 0;
 
 	if (!cell)
@@ -107,28 +108,25 @@ void afs_lookup_VL_servers(const char *cell, char *options)
 	}
 
 	dump_payload(payload);
-	info("Key timeout will be %ld seconds", host.ttl);
 
-	if (!debug_mode) {
-		unsigned int ttl;
+	/*
+	 * If TTL was set through the config file (@config_ttl),
+	 * it takes precedence over the one from the DNS record (stored
+	 * in host.ttl).
+	 */
+	if (config_ttl > 0)
+		ttl = (unsigned int)config_ttl;
+	else if (host.ttl > 0)
+		ttl = (unsigned int)host.ttl;
+	else
+		/* Fallback to default value if dns_resolver() couldn't
+		 * get TTL for some reason */
+		ttl = DEFAULT_KEY_TTL;
 
-		/*
-		 * If TTL was set through the config file (key_expiry),
-		 * it takes precedence over the one from the DNS record (stored
-		 * in host.ttl).
-		 */
-		if (key_expiry > -1)
-			ttl = (unsigned int)key_expiry;
-		else if (host.ttl > -1)
-			ttl = (unsigned int)host.ttl;
-		else
-			/* Fallback to default value if dns_resolver() couldn't
-			 * get TTL for some reason */
-			ttl = DEFAULT_KEY_TTL;
+	info("Key timeout will be %u seconds", ttl);
 
+	if (!debug_mode)
 		ret = afs_instantiate(payload, ttl);
-	}
-
 out_free:
 	free_hostinfo(&host);
 	free(payload);
